@@ -27,46 +27,16 @@
 
 #include "DHTesp.h"
 
-void DHTesp::setup(uint8_t pin, DHT_MODEL_t model)
+DHTesp::DHTesp(uint8_t _pin, uint8_t _model) {
+	pin = _pin;
+	model = _model;
+}
+
+DHTesp::~DHTesp() {} // DESTRUCTOR
+
+void DHTesp::begin()
 {
-	DHTesp::pin = pin;
-	DHTesp::model = model;
 	DHTesp::resetTimer(); // Make sure we do read the sensor in the next readSensor()
-
-	if (model == AUTO_DETECT)
-	{
-		DHTesp::model = DHT22;
-		readSensor();
-		if (error == ERROR_TIMEOUT)
-		{
-			DHTesp::model = DHT11;
-			// Warning: in case we auto detect a DHT11, you should wait at least 1000 msec
-			// before your first read request. Otherwise you will get a time out error.
-		}
-	}
-
-	//Set default comfort profile.
-
-	//In computing these constants the following reference was used
-	//http://epb.apogee.net/res/refcomf.asp
-	//It was simplified as 4 straight lines and added very little skew on
-	//the vertical lines (+0.1 on x for C,D)
-	//The for points used are(from top left, clock wise)
-	//A(30%, 30*C) B(70%, 26.2*C) C(70.1%, 20.55*C) D(30.1%, 22.22*C)
-	//On the X axis we have the rel humidity in % and on the Y axis the temperature in *C
-
-	//Too hot line AB
-	m_comfort.m_tooHot_m = -0.095;
-	m_comfort.m_tooHot_b = 32.85;
-	//Too humid line BC
-	m_comfort.m_tooHumid_m = -56.5;
-	m_comfort.m_tooHumid_b = 3981.2;
-	//Too cold line DC
-	m_comfort.m_tooCold_m = -0.04175;
-	m_comfort.m_tooHCold_b = 23.476675;
-	//Too dry line AD
-	m_comfort.m_tooDry_m = -77.8;
-	m_comfort.m_tooDry_b = 2364;
 }
 
 void DHTesp::resetTimer()
@@ -94,16 +64,13 @@ float DHTesp::getTemperature()
 	return temperature;
 }
 
-TempAndHumidity DHTesp::getTempAndHumidity()
+void DHTesp::getTempAndHumidity()
 {
 	readSensor();
 	if (error == ERROR_TIMEOUT)
 	{ // Try a second time to read
 		readSensor();
 	}
-	values.temperature = temperature;
-	values.humidity = humidity;
-	return values;
 }
 
 #ifndef OPTIMIZE_SRAM_SIZE
@@ -293,49 +260,9 @@ void DHTesp::readSensor()
 }
 
 //boolean isFahrenheit: True == Fahrenheit; False == Celcius
-float DHTesp::computeHeatIndex(float temperature, float percentHumidity, bool isFahrenheit)
-{
-	// Using both Rothfusz and Steadman's equations
-	// http://www.wpc.ncep.noaa.gov/html/heatindex_equation.shtml
-	float hi;
-
-	if (!isFahrenheit)
-	{
-		temperature = toFahrenheit(temperature);
-	}
-
-	hi = 0.5 * (temperature + 61.0 + ((temperature - 68.0) * 1.2) + (percentHumidity * 0.094));
-
-	if (hi > 79)
-	{
-		hi = -42.379 +
-			 2.04901523 * temperature +
-			 10.14333127 * percentHumidity +
-			 -0.22475541 * temperature * percentHumidity +
-			 -0.00683783 * pow(temperature, 2) +
-			 -0.05481717 * pow(percentHumidity, 2) +
-			 0.00122874 * pow(temperature, 2) * percentHumidity +
-			 0.00085282 * temperature * pow(percentHumidity, 2) +
-			 -0.00000199 * pow(temperature, 2) * pow(percentHumidity, 2);
-
-		if ((percentHumidity < 13) && (temperature >= 80.0) && (temperature <= 112.0))
-			hi -= ((13.0 - percentHumidity) * 0.25) * sqrt((17.0 - abs(temperature - 95.0)) * 0.05882);
-
-		else if ((percentHumidity > 85.0) && (temperature >= 80.0) && (temperature <= 87.0))
-			hi += ((percentHumidity - 85.0) * 0.1) * ((87.0 - temperature) * 0.2);
-	}
-
-	return isFahrenheit ? hi : toCelsius(hi);
-}
-
-//boolean isFahrenheit: True == Fahrenheit; False == Celcius
-float DHTesp::computeDewPoint(float temperature, float percentHumidity, bool isFahrenheit)
+float DHTesp::computeDewPoint(float temperature, float percentHumidity)
 {
 	// reference: http://wahiduddin.net/calc/density_algorithms.htm
-	if (isFahrenheit)
-	{
-		temperature = toCelsius(temperature);
-	}
 	double A0 = 373.15 / (273.15 + (double)temperature);
 	double SUM = -7.90298 * (A0 - 1);
 	SUM += 5.02808 * log10(A0);
@@ -345,133 +272,13 @@ float DHTesp::computeDewPoint(float temperature, float percentHumidity, bool isF
 	double VP = pow(10, SUM - 3) * (double)percentHumidity;
 	double Td = log(VP / 0.61078); // temp var
 	Td = (241.88 * Td) / (17.558 - Td);
-	return isFahrenheit ? toFahrenheit(Td) : Td;
+	return Td;
 }
 
-//boolean isFahrenheit: True == Fahrenheit; False == Celcius
-byte DHTesp::computePerception(float temperature, float percentHumidity, bool isFahrenheit)
-{
-	// Computing human perception from dew point
-	// reference: https://en.wikipedia.org/wiki/Dew_point ==> Relationship to human comfort
-	// reference: Horstmeyer, Steve (2006-08-15). "Relative Humidity....Relative to What? The Dew Point Temperature...a better approach". Steve Horstmeyer, Meteorologist, WKRC TV, Cincinnati, Ohio, USA. Retrieved 2009-08-20.
-	// Using table
-	// Return value Dew point    Human perception[6]
-	//    7         Over 26 °C   Severely high, even deadly for asthma related illnesses
-	//    6         24–26 °C     Extremely uncomfortable, oppressive
-	//    5         21–24 °C     Very humid, quite uncomfortable
-	//    4         18–21 °C     Somewhat uncomfortable for most people at upper edge
-	//    3         16–18 °C     OK for most, but all perceive the humidity at upper edge
-	//    2         13–16 °C     Comfortable
-	//    1         10–12 °C     Very comfortable
-	//    0         Under 10 °C  A bit dry for some
-
-	if (isFahrenheit)
-	{
-		temperature = toCelsius(temperature);
-	}
-	float dewPoint = computeDewPoint(temperature, percentHumidity);
-
-	if (dewPoint < 10.0f)
-	{
-		return Perception_Dry;
-	}
-	else if (dewPoint < 13.0f)
-	{
-		return Perception_VeryComfy;
-	}
-	else if (dewPoint < 16.0f)
-	{
-		return Perception_Comfy;
-	}
-	else if (dewPoint < 18.0f)
-	{
-		return Perception_Ok;
-	}
-	else if (dewPoint < 21.0f)
-	{
-		return Perception_UnComfy;
-	}
-	else if (dewPoint < 24.0f)
-	{
-		return Perception_QuiteUnComfy;
-	}
-	else if (dewPoint < 26.0f)
-	{
-		return Perception_VeryUnComfy;
-	}
-	// else dew >= 26.0
-	return Perception_SevereUncomfy;
-}
-
-//boolean isFahrenheit: True == Fahrenheit; False == Celcius
-float DHTesp::getComfortRatio(ComfortState &destComfortStatus, float temperature, float percentHumidity, bool isFahrenheit)
-{
-	float ratio = 100; //100%
-	float distance = 0;
-	float kTempFactor = 3;	//take into account the slope of the lines
-	float kHumidFactor = 0.1; //take into account the slope of the lines
-	uint8_t tempComfort = 0;
-
-	if (isFahrenheit)
-	{
-		temperature = toCelsius(temperature);
-	}
-
-	destComfortStatus = Comfort_OK;
-
-	distance = m_comfort.distanceTooHot(temperature, percentHumidity);
-	if (distance > 0)
-	{
-		//update the comfort descriptor
-		tempComfort += (uint8_t)Comfort_TooHot;
-		//decrease the comfot ratio taking the distance into account
-		ratio -= distance * kTempFactor;
-	}
-
-	distance = m_comfort.distanceTooHumid(temperature, percentHumidity);
-	if (distance > 0)
-	{
-		//update the comfort descriptor
-		tempComfort += (uint8_t)Comfort_TooHumid;
-		//decrease the comfot ratio taking the distance into account
-		ratio -= distance * kHumidFactor;
-	}
-
-	distance = m_comfort.distanceTooCold(temperature, percentHumidity);
-	if (distance > 0)
-	{
-		//update the comfort descriptor
-		tempComfort += (uint8_t)Comfort_TooCold;
-		//decrease the comfot ratio taking the distance into account
-		ratio -= distance * kTempFactor;
-	}
-
-	distance = m_comfort.distanceTooDry(temperature, percentHumidity);
-	if (distance > 0)
-	{
-		//update the comfort descriptor
-		tempComfort += (uint8_t)Comfort_TooDry;
-		//decrease the comfot ratio taking the distance into account
-		ratio -= distance * kHumidFactor;
-	}
-
-	destComfortStatus = (ComfortState)tempComfort;
-
-	if (ratio < 0)
-		ratio = 0;
-
-	return ratio;
-}
-
-float DHTesp::computeAbsoluteHumidity(float temperature, float percentHumidity, bool isFahrenheit)
+float DHTesp::computeAbsoluteHumidity(float temperature, float percentHumidity)
 {
 	// Calculate the absolute humidity in g/m³
 	// https://carnotcycle.wordpress.com/2012/08/04/how-to-convert-relative-humidity-to-absolute-humidity/
-	if (isFahrenheit)
-	{
-		temperature = toCelsius(temperature);
-	}
-
 	float absHumidity;
 	float absTemperature;
 	absTemperature = temperature + 273.15;
